@@ -4,15 +4,16 @@
 package ctmap
 
 import (
+	gomaps "maps"
 	"math/rand/v2"
 	"net/netip"
+	"slices"
 	"testing"
 
 	"github.com/cilium/ebpf/rlimit"
 	"github.com/cilium/fake"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
-	mapsexp "golang.org/x/exp/maps"
 
 	"github.com/cilium/cilium/pkg/bpf"
 	"github.com/cilium/cilium/pkg/maps/nat"
@@ -747,7 +748,7 @@ func TestCount(t *testing.T) {
 	assert.Equal(t, initial, batchCount)
 	assert.NoError(t, err)
 
-	for _, k := range mapsexp.Keys(cache)[:size/4] {
+	for _, k := range slices.Collect(gomaps.Keys(cache))[:size/4] {
 		if err := m.Delete(k); err != nil {
 			t.Fatal(err)
 		}

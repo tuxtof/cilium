@@ -5,12 +5,13 @@ package fqdn
 
 import (
 	"encoding/json"
+	"maps"
 	"net/netip"
 	"regexp"
+	goslices "slices"
 	"sort"
 	"unsafe"
 
-	"golang.org/x/exp/maps"
 	"k8s.io/apimachinery/pkg/util/sets"
 
 	"github.com/cilium/cilium/pkg/fqdn/matchpattern"
@@ -593,7 +594,7 @@ func (c *DNSCache) GetIPs() map[netip.Addr][]string {
 	out := make(map[netip.Addr][]string, len(c.reverse))
 
 	for ip, names := range c.reverse {
-		out[ip] = maps.Keys(names)
+		out[ip] = goslices.Collect(maps.Keys(names))
 	}
 
 	return out
