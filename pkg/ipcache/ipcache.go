@@ -47,19 +47,39 @@ type Identity struct {
 	// a pod IP (other source) has the same IP.
 	shadowed bool
 
-	// createdFromMetadata indicates that this entry was created via the new
-	// metadata API. This is needed to know if it is safe to delete
-	// an IPCache entry when no further metadata is associated with its prefix.
+	// tainted indicates that this entry touched by the legacy Upsert API.
+	// This informs the metadata subsystem to retain the original source and
+	// to clean up the entry if the legacy API already dropped its reference.
+	// upsertLocked will ensure that this field remains true once set. In other
+	// words, there is no way to un-taint an entry.
 	// This field is intended to be removed once cilium/cilium#21142 has been
 	// fully implemented and all entries are created via the new metadata API
-	createdFromMetadata bool
+	tainted bool
+
+	// overwrittenLegacySource contains the source of the original entry created
+	// via legacy API. This is preserved so that original source can be restored
+	// if the metadata API stops managing the entry.
+	overwrittenLegacySource source.Source
 }
 
 func (i Identity) equals(o Identity) bool {
 	return i.ID == o.ID &&
 		i.Source == o.Source &&
 		i.shadowed == o.shadowed &&
-		i.createdFromMetadata == o.createdFromMetadata
+		i.tainted == o.tainted &&
+		i.overwrittenLegacySource == o.overwrittenLegacySource
+}
+
+func (i Identity) exclusivelyOwnedByLegacyAPI() bool {
+	return i.tainted && i.overwrittenLegacySource == ""
+}
+
+func (i Identity) exclusivelyOwnedByMetadataAPI() bool {
+	return !i.tainted
+}
+
+func (i Identity) ownedByLegacyAndMetadataAPI() bool {
+	return i.tainted && i.overwrittenLegacySource != ""
 }
 
 // IPKeyPair is the (IP, key) pair used of the identity
@@ -255,7 +275,7 @@ func (ipc *IPCache) getK8sMetadata(ip string) *K8sMetadata {
 func (ipc *IPCache) Upsert(ip string, hostIP net.IP, hostKey uint8, k8sMeta *K8sMetadata, newIdentity Identity) (namedPortsChanged bool, err error) {
 	ipc.mutex.Lock()
 	defer ipc.mutex.Unlock()
-	return ipc.upsertLocked(ip, hostIP, hostKey, k8sMeta, newIdentity, false /* !force */)
+	return ipc.upsertLocked(ip, hostIP, hostKey, k8sMeta, newIdentity, false /* !force */, true /* fromLegacyAPI */)
 }
 
 // upsertLocked adds / updates the provided IP and identity into the IPCache,
@@ -280,6 +300,7 @@ func (ipc *IPCache) upsertLocked(
 	k8sMeta *K8sMetadata,
 	newIdentity Identity,
 	force bool,
+	fromLegacyAPI bool,
 ) (namedPortsChanged bool, err error) {
 	var newNamedPorts types.NamedPortMap
 	if k8sMeta != nil {
@@ -329,16 +350,25 @@ func (ipc *IPCache) upsertLocked(
 			return false, nil
 		}
 
-		// Here we track if an entry was created via new asynchronous
+		// Here we track if an entry was previously created via new asynchronous
 		// UpsertMetadata API or the old synchronous Upsert call.
-		// If an entry is ever touched via the old Upsert API, we want to keep
-		// createdFromMetadata set to false, and require that the entry
-		// manually is deleted via the Delete function.
-		if !cachedIdentity.createdFromMetadata {
-			newIdentity.createdFromMetadata = false
+		// If an entry is ever touched via the old Upsert API, want to keep
+		// the entry tainted. This ensures that the entry can be removed by the
+		// metadata subsystem if the identity is deallocated
+		if cachedIdentity.tainted {
+			newIdentity.tainted = true
+		}
+		if fromLegacyAPI && cachedIdentity.ownedByLegacyAndMetadataAPI() {
+			// Update the legacy source if this upsert is coming from the legacy API
+			newIdentity.overwrittenLegacySource = newIdentity.Source
 		}
 
 		oldIdentity = &cachedIdentity
+	}
+
+	// Taint the new entry if this is an invocation from the legacy API
+	if fromLegacyAPI {
+		newIdentity.tainted = true
 	}
 
 	// Endpoint IP identities take precedence over CIDR identities, so if the
